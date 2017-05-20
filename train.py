@@ -144,7 +144,7 @@ class Agent(threading.Thread):
             time_step += 1
             s = s2
 
-            if time_step % 5 == 0 or done:
+            if time_step % 100 == 0 or done:
                 self.train(states, actions, rewards, done)
                 self.sess.run(self.global_to_local)
                 states, actions, rewards = [], [], []
