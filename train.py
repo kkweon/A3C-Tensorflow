@@ -141,13 +141,16 @@ class Agent(threading.Thread):
             rewards.append(r)
 
             state_diff = s2 - s
-            time_step += 1
             s = s2
 
-            if time_step % 100 == 0 or done:
-                self.train(states, actions, rewards, done)
+            if r == -1 or r == 1:
+                time_step += 1
+
+            if time_step >= 5 or done:
+                self.train(states, actions, rewards)
                 self.sess.run(self.global_to_local)
                 states, actions, rewards = [], [], []
+                time_step = 0
 
         self.print(total_reward)
 
@@ -170,7 +173,7 @@ class Agent(threading.Thread):
 
         return np.random.choice(np.arange(self.output_dim) + 1, p=action)
 
-    def train(self, states, actions, rewards, done):
+    def train(self, states, actions, rewards):
         states = np.array(states)
         actions = np.array(actions) - 1
         rewards = np.array(rewards)
@@ -180,9 +183,6 @@ class Agent(threading.Thread):
         }
 
         values = self.sess.run(self.local.values, feed)
-
-        if not done:
-            rewards[-1] += 0.99 * values[-1]
 
         rewards = discount_rewards(rewards, gamma=0.99)
 
@@ -256,7 +256,8 @@ def main():
         var_list = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, "global")
         saver = tf.train.Saver(var_list=var_list)
         saver.save(sess, save_path)
-        print("\n=" * 10)
+        print()
+        print("=" * 10)
         print('Checkpoint Saved to {}'.format(save_path))
         print("=" * 10)
 
