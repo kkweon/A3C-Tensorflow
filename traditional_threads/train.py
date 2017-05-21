@@ -1,10 +1,24 @@
 import tensorflow as tf
 import numpy as np
 import threading
+from multiprocessing import Proces
 import gym
+import os
+from scipy.misc import imresize
 
 
 def copy_src_to_dst(from_scope, to_scope):
+    """Creates a copy variable weights operation
+
+    Args:
+        from_scope (str): The name of scope to copy from
+            It should be "global"
+        to_scope (str): The name of scope to copy to
+            It should be "thread-{}"
+
+    Returns:
+        list: Each element is a copy operation
+    """
     from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, from_scope)
     to_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, to_scope)
 
@@ -14,38 +28,127 @@ def copy_src_to_dst(from_scope, to_scope):
     return op_holder
 
 
-def pipeline(image):
-    """ prepro 210x160x3 uint8 frame into 6400 (80x80) 1D float vector """
-    image = image[35:195]  # crop
-    image = image[::2, ::2, 0]  # downsample by factor of 2
-    image[image == 144] = 0  # erase background (background type 1)
-    image[image == 109] = 0  # erase background (background type 2)
-    image[image != 0] = 1  # everything else (paddles, ball) just set to 1
-    return image.astype(np.float).ravel()
+def pipeline(image, new_HW=(80, 80), height_range=(35, 193), bg=(144, 72, 17)):
+    """Returns a preprocessed image
+
+    (1) Crop image (top and bottom)
+    (2) Remove background & grayscale
+    (3) Reszie to smaller image
+
+    Args:
+        image (3-D array): (H, W, C)
+        new_HW (tuple): New image size (height, width)
+        height_range (tuple): Height range (H_begin, H_end) else cropped
+        bg (tuple): Background RGB Color (R, G, B)
+
+    Returns:
+        image (3-D array): (H, W, 1)
+    """
+    image = crop_image(image, height_range)
+    image = resize_image(image, new_HW)
+    image = kill_background_grayscale(image, bg)
+    image = np.expand_dims(image, axis=2)
+
+    return image
 
 
-def discount_rewards(r, gamma=0.99):
-    """ take 1D float array of rewards and compute discounted reward """
-    discounted_r = np.zeros_like(r, dtype=np.float32)
+def resize_image(image, new_HW):
+    """Returns a resized image
+
+    Args:
+        image (3-D array): Numpy array (H, W, C)
+        new_HW (tuple): Target size (height, width)
+
+    Returns:
+        image (3-D array): Resized image (height, width, C)
+    """
+    return imresize(image, new_HW, interp="nearest")
+
+
+def crop_image(image, height_range=(35, 195)):
+    """Crops top and bottom
+
+    Args:
+        image (3-D array): Numpy image (H, W, C)
+        height_range (tuple): Height range between (min_height, max_height)
+            will be kept
+
+    Returns:
+        image (3-D array): Numpy image (max_H - min_H, W, C)
+    """
+    h_beg, h_end = height_range
+    return image[h_beg:h_end, ...]
+
+
+def kill_background_grayscale(image, bg):
+    """Make the background 0
+
+    Args:
+        image (3-D array): Numpy array (H, W, C)
+        bg (tuple): RGB code of background (R, G, B)
+
+    Returns:
+        image (2-D array): Binarized image of shape (H, W)
+            The background is 0 and everything else is 1
+    """
+    H, W, _ = image.shape
+
+    R = image[..., 0]
+    G = image[..., 1]
+    B = image[..., 2]
+
+    cond = (R == bg[0]) & (G == bg[1]) & (B == bg[2])
+
+    image = np.zeros((H, W))
+    image[~cond] = 1
+
+    return image
+
+
+def discount_reward(rewards, gamma=0.99):
+    """Returns discounted rewards
+
+    Args:
+        rewards (1-D array): Reward array
+        gamma (float): Discounted rate
+
+    Returns:
+        discounted_rewards: same shape as `rewards`
+
+    Notes:
+        In Pong, when the reward can be {-1, 0, 1}.
+
+        However, when the reward is either -1 or 1,
+        it means the game has been reset.
+
+        Therefore, it's necessaray to reset `running_add` to 0
+        whenever the reward is nonzero
+    """
+    discounted_r = np.zeros_like(rewards, dtype=np.float32)
     running_add = 0
-    for t in reversed(range(len(r))):
-        if r[t] != 0:
-            running_add = 0  # reset the sum, since this was a game boundary (pong specific!)
-        running_add = running_add * gamma + r[t]
+    for t in reversed(range(len(rewards))):
+        if rewards[t] != 0:
+            running_add = 0
+        running_add = running_add * gamma + rewards[t]
         discounted_r[t] = running_add
+
     return discounted_r
 
 
 class A3CNetwork(object):
 
-    def __init__(self, name, input_dim, output_dim, hidden_dims=[16, 32], logdir=None):
-        """
+    def __init__(self, name, input_shape, output_dim, logdir=None):
+        """Network structure is defined here
 
-        Assumes input_dim is flat
-        (N, D)
+        Args:
+            name (str): The name of scope
+            input_shape (list): The shape of input image [H, W, C]
+            output_dim (int): Number of actions
+            logdir (str, optional): directory to save summaries
+                TODO: create a summary op
         """
         with tf.variable_scope(name):
-            self.states = tf.placeholder(tf.float32, shape=[None, input_dim], name="states")
+            self.states = tf.placeholder(tf.float32, shape=[None, *input_shape], name="states")
             self.actions = tf.placeholder(tf.uint8, shape=[None], name="actions")
             self.rewards = tf.placeholder(tf.float32, shape=[None], name="rewards")
             self.advantage = tf.placeholder(tf.float32, shape=[None], name="advantage")
@@ -53,10 +156,26 @@ class A3CNetwork(object):
             action_onehot = tf.one_hot(self.actions, output_dim, name="action_onehot")
             net = self.states
 
-            for idx, h_dim in enumerate(hidden_dims):
-                with tf.variable_scope("layer{}".format(idx)):
-                    net = tf.layers.dense(net, h_dim, name="fc")
-                    net = tf.nn.relu(net)
+            with tf.variable_scope("layer1"):
+                net = tf.layers.conv2d(net,
+                                       filters=16,
+                                       kernel_size=(8, 8),
+                                       strides=(4, 4),
+                                       name="conv")
+                net = tf.nn.relu(net, name="relu")
+
+            with tf.variable_scope("layer2"):
+                net = tf.layers.conv2d(net,
+                                       filters=32,
+                                       kernel_size=(4, 4),
+                                       strides=(2, 2),
+                                       name="conv")
+                net = tf.nn.relu(net, name="relu")
+
+            with tf.variable_scope("fc1"):
+                net = tf.contrib.layers.flatten(net)
+                net = tf.layers.dense(net, 256, name='dense')
+                net = tf.nn.relu(net, name='relu')
 
             # actor network
             actions = tf.layers.dense(net, output_dim, name="final_fc")
@@ -96,13 +215,26 @@ class A3CNetwork(object):
 
 class Agent(threading.Thread):
 
-    def __init__(self, session, env, coord, name, global_network, input_dim, output_dim, hidden_dims, logdir=None):
+    def __init__(self, session, env, coord, name, global_network, input_shape, output_dim, logdir=None):
+        """Agent worker thread
+
+        Args:
+            session (tf.Session): Tensorflow session needs to be shared
+            env (gym.env): Gym environment
+            coord (tf.train.Coordinator): Tensorflow Queue Coordinator
+            name (str): Name of this worker
+            global_network (A3CNetwork): Global network that needs to be updated
+            input_shape (list): Required for local A3CNetwork (H, W, C)
+            output_dim (int): Number of actions
+            logdir (str, optional): If logdir is given, will write summary
+                TODO: Add summary
+        """
         super(Agent, self).__init__()
-        self.local = A3CNetwork(name, input_dim, output_dim, hidden_dims, logdir)
+        self.local = A3CNetwork(name, input_shape, output_dim, logdir)
         self.global_to_local = copy_src_to_dst("global", name)
         self.global_network = global_network
 
-        self.input_dim = input_dim
+        self.input_shape = input_shape
         self.output_dim = output_dim
         self.env = env
         self.sess = session
@@ -143,14 +275,14 @@ class Agent(threading.Thread):
             state_diff = s2 - s
             s = s2
 
-            if r == -1 or r == 1:
+            if r == -1 or r == 1 or done:
                 time_step += 1
 
-            if time_step >= 5 or done:
-                self.train(states, actions, rewards)
-                self.sess.run(self.global_to_local)
-                states, actions, rewards = [], [], []
-                time_step = 0
+                if time_step >= 5 or done:
+                    self.train(states, actions, rewards)
+                    self.sess.run(self.global_to_local)
+                    states, actions, rewards = [], [], []
+                    time_step = 0
 
         self.print(total_reward)
 
@@ -161,9 +293,9 @@ class Agent(threading.Thread):
     def choose_action(self, states):
         """
         Args:
-            states (2-D array): (N, input_dim)
+            states (2-D array): (N, H, W, 1)
         """
-        states = np.reshape(states, [-1, self.input_dim])
+        states = np.reshape(states, [-1, *self.input_shape])
         feed = {
             self.local.states: states
         }
@@ -184,11 +316,13 @@ class Agent(threading.Thread):
 
         values = self.sess.run(self.local.values, feed)
 
-        rewards = discount_rewards(rewards, gamma=0.99)
+        rewards = discount_reward(rewards, gamma=0.99)
+        rewards -= np.mean(rewards)
+        rewards /= np.std(rewards)
 
         advantage = rewards - values
         advantage -= np.mean(advantage)
-        advantage /= np.std(advantage) + 1e-7
+        advantage /= np.std(advantage) + 1e-8
 
         feed = {
             self.local.states: states,
@@ -214,20 +348,18 @@ def main():
         coord = tf.train.Coordinator()
 
         save_path = "checkpoint/model.ckpt"
-        n_threads = 8
-        input_dim = 80 * 80
+        n_threads = 16
+        input_shape = [80, 80, 1]
         output_dim = 3  # {1, 2, 3}
-        hidden_dims = [256, 256]
         global_network = A3CNetwork(name="global",
-                                    input_dim=input_dim,
-                                    output_dim=output_dim,
-                                    hidden_dims=hidden_dims)
+                                    input_shape=input_shape,
+                                    output_dim=output_dim)
 
         thread_list = []
         env_list = []
 
         for id in range(n_threads):
-            env = gym.make("Pong-v0")
+            env = gym.make("PongDeterministic-v3")
 
             if id == 0:
                 env = gym.wrappers.Monitor(env, "monitors", force=True)
@@ -237,14 +369,20 @@ def main():
                                  coord=coord,
                                  name="thread_{}".format(id),
                                  global_network=global_network,
-                                 input_dim=input_dim,
-                                 output_dim=output_dim,
-                                 hidden_dims=hidden_dims)
+                                 input_shape=input_shape,
+                                 output_dim=output_dim)
             thread_list.append(single_agent)
             env_list.append(env)
 
-        init = tf.global_variables_initializer()
-        sess.run(init)
+        if tf.train.get_checkpoint_state(os.path.dirname(save_path)):
+            var_list = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, "global")
+            saver = tf.train.Saver(var_list=var_list)
+            saver.restore(sess, save_path)
+            print("Model restored to global")
+        else:
+            init = tf.global_variables_initializer()
+            sess.run(init)
+            print("No model is found")
 
         for t in thread_list:
             t.start()

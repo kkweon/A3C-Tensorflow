@@ -1,6 +1,8 @@
 # project
 monitors
 checkpoint
+monitor
+train_logs
 
 ###Python###
 
