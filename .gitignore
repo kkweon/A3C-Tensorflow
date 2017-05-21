@@ -3,6 +3,7 @@ monitors
 checkpoint
 monitor
 train_logs
+gym_uploads
 
 ###Python###
 

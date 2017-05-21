@@ -43,6 +43,10 @@ def play_episode(env: gym.Env, agent: trainer.Agent, pipeline, render=False):
 
 def main(_):
     env = gym.make("Pong-v0")
+
+    if FLAGS.monitor:
+        env = gym.wrappers.Monitor(env, "gym_uploads", force=True)
+
     input_shape = [80, 80, 1]
     output_dim = 3
     network = trainer.A3CNetwork("name", input_shape, output_dim)
@@ -75,6 +79,11 @@ if __name__ == '__main__':
         "--render",
         action='store_true',
         help="Render a game play"
+    )
+    parser.add_argument(
+        "--monitor",
+        action='store_true',
+        help="Monitor a game play"
     )
     FLAGS, unparsed = parser.parse_known_args()
     tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)

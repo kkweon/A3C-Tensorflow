@@ -1,7 +1,6 @@
 import tensorflow as tf
 import numpy as np
 import threading
-from multiprocessing import Proces
 import gym
 import os
 from scipy.misc import imresize
@@ -347,8 +346,15 @@ def main():
         sess = tf.InteractiveSession()
         coord = tf.train.Coordinator()
 
-        save_path = "checkpoint/model.ckpt"
-        n_threads = 16
+        checkpoint_dir = "checkpoint"
+        monitor_dir = "monitors"
+        save_path = os.path.join(checkpoint_dir, "model.ckpt")
+
+        if not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir)
+            print("Directory {} was created".format(checkpoint_dir))
+
+        n_threads = 4
         input_shape = [80, 80, 1]
         output_dim = 3  # {1, 2, 3}
         global_network = A3CNetwork(name="global",
@@ -359,10 +365,10 @@ def main():
         env_list = []
 
         for id in range(n_threads):
-            env = gym.make("PongDeterministic-v3")
+            env = gym.make("Pong-v0")
 
             if id == 0:
-                env = gym.wrappers.Monitor(env, "monitors", force=True)
+                env = gym.wrappers.Monitor(env, monitor_dir, force=True)
 
             single_agent = Agent(env=env,
                                  session=sess,
@@ -394,10 +400,7 @@ def main():
         var_list = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, "global")
         saver = tf.train.Saver(var_list=var_list)
         saver.save(sess, save_path)
-        print()
-        print("=" * 10)
         print('Checkpoint Saved to {}'.format(save_path))
-        print("=" * 10)
 
         print("Closing threads")
         coord.request_stop()
