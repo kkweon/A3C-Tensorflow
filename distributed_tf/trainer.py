@@ -16,14 +16,14 @@ def pipeline(image, new_HW=(80, 80), height_range=(35, 193), bg=(144, 72, 17)):
     """Returns a preprocessed image
 
     (1) Crop image (top and bottom)
-    (2) Remove background & grayscale
-    (3) Reszie to smaller image
+    (2) Resize to smaller image
+    (3) Remove background & grayscale
 
     Args:
-        image (3-D array): (H, W, C)
-        new_HW (tuple): New image size (height, width)
+        image (3-D array): Numpy array of shape (H, W, C)
+        new_HW (tuple): Target image size (height, width)
         height_range (tuple): Height range (H_begin, H_end) else cropped
-        bg (tuple): Background RGB Color (R, G, B)
+        bg (tuple): Background RGB Color as a tuple of (R, G, B)
 
     Returns:
         image (3-D array): (H, W, 1)
@@ -40,7 +40,7 @@ def resize_image(image, new_HW):
     """Returns a resized image
 
     Args:
-        image (3-D array): Numpy array (H, W, C)
+        image (3-D array): Numpy array of shape (H, W, C)
         new_HW (tuple): Target size (height, width)
 
     Returns:
@@ -128,8 +128,6 @@ class A3CNetwork(object):
             name (str): The name of scope
             input_shape (list): The shape of input image [H, W, C]
             output_dim (int): Number of actions
-            logdir (str, optional): directory to save summaries
-                TODO: create a summary op
         """
         self.states = tf.placeholder(tf.float32, shape=[None, *input_shape], name="states")
         self.actions = tf.placeholder(tf.uint8, shape=[None], name="actions")
@@ -193,15 +191,11 @@ class Agent(object):
         """Agent worker thread
 
         Args:
-            session (tf.Session): Tensorflow session needs to be shared
-            env (gym.env): Gym environment
-            coord (tf.train.Coordinator): Tensorflow Queue Coordinator
-            name (str): Name of this worker
-            global_network (A3CNetwork): Global network that needs to be updated
-            input_shape (list): Required for local A3CNetwork (H, W, C)
+            name (str): Name of this agent (usually, "thread-{id}")
+            env (gym.Env): Gym environment
+            network (A3CNetwork): Actor Critic Network
+            input_shape (list): A list of [H, W, C]
             output_dim (int): Number of actions
-            logdir (str, optional): If logdir is given, will write summary
-                TODO: Add summary
         """
         self.name = name
         self.env = env
@@ -270,7 +264,7 @@ class Agent(object):
     def choose_action(self, states):
         """
         Args:
-            states (2-D array): (N, H, W, 1)
+            states (4-D array): (N, H, W, 1)
         """
         states = np.reshape(states, [-1, *self.input_shape])
         feed = {
